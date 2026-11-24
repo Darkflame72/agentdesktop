@@ -20,7 +20,9 @@ const PACKAGE: &str = "@github/copilot";
 pub(super) fn discover() -> Option<Agent> {
     let executable = metadata::find_executable("copilot", executable_candidates())?;
     Some(Agent {
-        version: npm_version(&executable),
+        version: npm_version(&executable)
+            .or_else(|| standalone_version(&executable))
+            .or_else(|| homebrew_version(&executable)),
         executable,
         kind: Copilot::ID.to_owned(),
         mcp_servers: Vec::new(),
@@ -47,12 +49,63 @@ fn executable_candidates() -> Vec<PathBuf> {
 /// The version from the `@github/copilot` manifest next to the launcher: npm
 /// links `<prefix>/bin/copilot` into `<prefix>/lib/node_modules/@github/copilot`,
 /// so the manifest sits in an ancestor of the resolved launcher or in a
-/// `node_modules` directory next to one. A standalone binary has no manifest
-/// and reports no version.
+/// `node_modules` directory next to one.
 pub(super) fn npm_version(executable: &Path) -> Option<String> {
     manifest_candidates(executable)
         .into_iter()
         .find_map(|path| metadata::json_package_version(&path, PACKAGE))
+}
+
+/// Standalone releases keep their version in the install directory. Reading
+/// that path avoids executing the CLI from a system daemon running as root.
+fn standalone_version(executable: &Path) -> Option<String> {
+    ["releases", "versions"]
+        .into_iter()
+        .filter_map(|component| metadata::version_after_component(executable, component))
+        .find_map(|release| {
+            let version = [
+                "-aarch64-",
+                "-arm64-",
+                "-x86_64-",
+                "-x64-",
+                "-i686-",
+                "-ia32-",
+                "-darwin-",
+                "-linux-",
+                "-win32-",
+            ]
+            .into_iter()
+            .find_map(|target| release.split_once(target).map(|(version, _)| version))
+            .unwrap_or(&release);
+            is_version(version).then(|| version.to_owned())
+        })
+}
+
+/// Homebrew links `copilot` into a versioned `Cellar` directory.
+fn homebrew_version(executable: &Path) -> Option<String> {
+    let resolved = executable.canonicalize().ok()?;
+    let components: Vec<_> = resolved
+        .components()
+        .filter_map(|component| component.as_os_str().to_str())
+        .collect();
+    let cellar = components.iter().position(|component| *component == "Cellar")?;
+    let formula = *components.get(cellar + 1)?;
+    if !matches!(formula, "copilot" | "copilot-cli") {
+        return None;
+    }
+    let version = *components.get(cellar + 2)?;
+    is_version(version).then(|| version.to_owned())
+}
+
+fn is_version(version: &str) -> bool {
+    let core = version
+        .split_once(['-', '+'])
+        .map_or(version, |(core, _)| core);
+    let parts: Vec<_> = core.split('.').collect();
+    parts.len() == 3
+        && parts.iter().all(|part| {
+            !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit())
+        })
 }
 
 pub(super) fn manifest_candidates(executable: &Path) -> Vec<PathBuf> {

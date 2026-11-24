@@ -23,12 +23,59 @@ pub(super) fn discover() -> Option<Agent> {
 }
 
 fn standalone_version(executable: &Path) -> Option<String> {
-    metadata::version_after_component(executable, "releases").and_then(|release| {
-        let target_marker = format!("-{}-", std::env::consts::ARCH);
-        release
-            .split_once(&target_marker)
-            .map(|(version, _)| version.to_owned())
-    })
+    ["releases", "versions"]
+        .into_iter()
+        .filter_map(|component| metadata::version_after_component(executable, component))
+        .find_map(|release| version_from_release(&release))
+        .or_else(|| homebrew_version(executable))
+}
+
+fn version_from_release(release: &str) -> Option<String> {
+    // Codex release directories have used different architecture/platform
+    // spellings, while some installers use the bare version directory. Do not
+    // compare against Rust's ARCH constant: it does not use npm's `arm64` or
+    // `x64` spellings.
+    let version = [
+        "-aarch64-",
+        "-arm64-",
+        "-x86_64-",
+        "-x64-",
+        "-i686-",
+        "-ia32-",
+        "-darwin-",
+        "-linux-",
+        "-win32-",
+    ]
+    .into_iter()
+    .find_map(|target| release.split_once(target).map(|(version, _)| version))
+    .unwrap_or(release);
+    is_version(version).then(|| version.to_owned())
+}
+
+fn is_version(version: &str) -> bool {
+    let core = version
+        .split_once(['-', '+'])
+        .map_or(version, |(core, _)| core);
+    let parts: Vec<_> = core.split('.').collect();
+    parts.len() == 3
+        && parts.iter().all(|part| {
+            !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit())
+        })
+}
+
+fn homebrew_version(executable: &Path) -> Option<String> {
+    let resolved = executable.canonicalize().ok()?;
+    let components: Vec<_> = resolved
+        .components()
+        .filter_map(|component| component.as_os_str().to_str())
+        .collect();
+    let cellar = components.iter().position(|component| *component == "Cellar")?;
+    let formula = *components.get(cellar + 1)?;
+    if formula != "codex" {
+        return None;
+    }
+    let version = *components.get(cellar + 2)?;
+    is_version(version).then(|| version.to_owned())
 }
 
 fn npm_version(executable: &Path) -> Option<String> {

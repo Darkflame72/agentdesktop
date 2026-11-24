@@ -483,6 +483,14 @@ pub struct ControllerConnectionConfig {
     /// reach the IdP's device-authorization and token endpoints directly.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub device_authorization: bool,
+    /// Path to a file holding an enrollment token signed by an issuer the
+    /// controller trusts (`enrollmentTokens`).
+    ///
+    /// The daemon enrolls with this token instead of a user sign-in, so a
+    /// device management system can enroll devices unattended. Cannot be
+    /// combined with `deviceAuthorization`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enrollment_token_path: Option<PathBuf>,
 }
 
 /// Startup configuration for the Agentdesktop fleet controller.
@@ -506,6 +514,9 @@ pub struct ControllerConfig {
     pub database_url: String,
     /// OpenID Connect settings used for device enrollment and authorization.
     pub oidc: ControllerOidcConfig,
+    /// Unattended device enrollment with operator-signed tokens. Disabled when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enrollment_tokens: Option<ControllerEnrollmentTokensConfig>,
     /// Daemon configuration distributed to enrolled devices.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub daemon_config: Option<ControllerDaemonConfig>,
@@ -684,17 +695,18 @@ impl Default for ControllerGatewayLimitsConfig {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase", default, deny_unknown_fields)]
 pub struct ControllerFleetLimitsConfig {
-    /// Open fleet connections allowed in total. At the limit, the connection
-    /// idle the longest is closed to admit a new one; when none is idle, the
-    /// new one is closed. A connection is idle unless a client with a device
-    /// certificate has a request or `Connect` stream open on it. Defaults to
-    /// `50000`.
+    /// Open fleet connections allowed in total. At the limit, the idle
+    /// connection with the oldest activity (its last request starting or
+    /// ending, or else its being accepted) is closed to admit a new one; when
+    /// none is idle, the new one is closed. A connection is idle unless a
+    /// client with a device certificate has a request or `Connect` stream open
+    /// on it. Defaults to `50000`.
     #[cfg_attr(feature = "schema", schemars(range(min = 1)))]
     pub max_connections: usize,
     /// Open fleet connections allowed from one client address: an IPv4
-    /// address, or an IPv6 /64. At the limit, that address's connection idle
-    /// the longest is closed to admit a new one; when none is idle, the new one
-    /// is closed. Raise it when more devices share an address, such as behind a
+    /// address, or an IPv6 /64. At the limit, that address's idle connection
+    /// with the oldest activity is closed to admit a new one; when none is
+    /// idle, the new one is closed. Raise it when more devices share an address, such as behind a
     /// NAT or a load balancer that does not preserve client addresses. Defaults
     /// to `4096`.
     #[cfg_attr(feature = "schema", schemars(range(min = 1)))]
@@ -745,6 +757,26 @@ impl ControllerFleetLimitsConfig {
         device_message_burst: 600,
         device_message_refill: Duration::from_millis(50),
     };
+
+    /// Fails when a limit is zero. A zero count would refuse everything, and a
+    /// zero refill would turn its rate limit off.
+    pub fn validate(&self) -> anyhow::Result<()> {
+        for (field, zero) in [
+            ("maxConnections", self.max_connections == 0),
+            ("connectionsPerAddress", self.connections_per_address == 0),
+            ("maxMessageBytes", self.max_message_bytes == 0),
+            ("enrollmentInFlight", self.enrollment_in_flight == 0),
+            ("enrollmentBurst", self.enrollment_burst == 0),
+            ("enrollmentRefill", self.enrollment_refill.is_zero()),
+            ("deviceMessageBurst", self.device_message_burst == 0),
+            ("deviceMessageRefill", self.device_message_refill.is_zero()),
+        ] {
+            if zero {
+                anyhow::bail!("fleetListener.limits.{field} must be greater than zero");
+            }
+        }
+        Ok(())
+    }
 }
 
 impl Default for ControllerFleetLimitsConfig {
@@ -765,6 +797,36 @@ pub struct ControllerOidcConfig {
     /// Redirect URI registered for the native enrollment client.
     #[serde(default = "default_oidc_redirect_uri")]
     pub redirect_uri: String,
+}
+
+/// Enrollment tokens are JWTs with `iss`, `aud`, `jti` and `iat` claims; `exp`
+/// and `nbf` are honored when present. A token enrolls any number of devices.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ControllerEnrollmentTokensConfig {
+    /// Audience (`aud`) every enrollment token must carry.
+    pub audience: String,
+    /// Token issuers the controller trusts.
+    pub issuers: Vec<ControllerEnrollmentTokenIssuer>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ControllerEnrollmentTokenIssuer {
+    /// Issuer (`iss`) of the tokens this key verifies.
+    pub name: String,
+    /// Path to the PEM-encoded public key: ECDSA P-256 or P-384, Ed25519, or
+    /// RSA of at least 2048 bits. Tokens must be signed with an algorithm of
+    /// the key's type.
+    ///
+    /// Relative paths are resolved from the controller configuration directory.
+    pub public_key_path: PathBuf,
+    /// Token IDs (`jti`) that are no longer accepted. Devices enrolled with
+    /// one of them are rejected as well.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub revoked_ids: Vec<String>,
 }
 
 /// Controller-owned daemon configuration file and its revision.
@@ -1566,6 +1628,11 @@ pub fn load_controller(path: &Path) -> anyhow::Result<ControllerConfig> {
     if let Some(daemon) = &mut config.daemon_config {
         resolve_relative(&mut daemon.path, directory);
     }
+    if let Some(tokens) = &mut config.enrollment_tokens {
+        for issuer in &mut tokens.issuers {
+            resolve_relative(&mut issuer.public_key_path, directory);
+        }
+    }
     if let Some(gateway) = &mut config.gateway_jwt {
         resolve_relative(&mut gateway.private_key, directory);
     }
@@ -1623,6 +1690,23 @@ pub fn parse_controller(contents: &str) -> anyhow::Result<ControllerConfig> {
     {
         anyhow::bail!("daemonConfig.revision must be greater than zero");
     }
+    if let Some(tokens) = &config.enrollment_tokens {
+        if tokens.audience.trim().is_empty() {
+            anyhow::bail!("enrollmentTokens.audience cannot be empty");
+        }
+        if tokens.issuers.is_empty() {
+            anyhow::bail!("enrollmentTokens.issuers cannot be empty");
+        }
+        let mut names = std::collections::BTreeSet::new();
+        for issuer in &tokens.issuers {
+            if issuer.name.trim().is_empty() {
+                anyhow::bail!("enrollmentTokens.issuers has an entry with an empty name");
+            }
+            if !names.insert(&issuer.name) {
+                anyhow::bail!("enrollmentTokens.issuers.{} is defined twice", issuer.name);
+            }
+        }
+    }
     if let Some(gateway) = &config.gateway_jwt {
         if gateway.issuer.trim().is_empty() {
             anyhow::bail!("gatewayJwt.issuer cannot be empty");
@@ -1663,24 +1747,7 @@ pub fn parse_controller(contents: &str) -> anyhow::Result<ControllerConfig> {
             }
         }
     }
-    let limits = &config.fleet_listener.limits;
-    for (field, zero) in [
-        ("maxConnections", limits.max_connections == 0),
-        ("connectionsPerAddress", limits.connections_per_address == 0),
-        ("maxMessageBytes", limits.max_message_bytes == 0),
-        ("enrollmentInFlight", limits.enrollment_in_flight == 0),
-        ("enrollmentBurst", limits.enrollment_burst == 0),
-        ("enrollmentRefill", limits.enrollment_refill.is_zero()),
-        ("deviceMessageBurst", limits.device_message_burst == 0),
-        (
-            "deviceMessageRefill",
-            limits.device_message_refill.is_zero(),
-        ),
-    ] {
-        if zero {
-            anyhow::bail!("fleetListener.limits.{field} must be greater than zero");
-        }
-    }
+    config.fleet_listener.limits.validate()?;
     let admin = &config.admin_listener.limits;
     let gateway = &config.gateway_listener.limits;
     for (field, zero) in [
@@ -1787,6 +1854,11 @@ fn parse_local_daemon(contents: &str) -> anyhow::Result<DaemonConfig> {
         }
         if controller.ca_certificate_path.as_os_str().is_empty() {
             anyhow::bail!("controller.caCertificatePath cannot be empty");
+        }
+        if controller.enrollment_token_path.is_some() && controller.device_authorization {
+            anyhow::bail!(
+                "controller.enrollmentTokenPath cannot be combined with deviceAuthorization"
+            );
         }
     }
     if config.inventory_interval.is_zero() {
@@ -2538,6 +2610,62 @@ controller:
     }
 
     #[test]
+    fn daemon_enrollment_token_replaces_user_sign_in() {
+        let token = r#"
+controller:
+  address: https://controller.example.com
+  caCertificatePath: controller-ca.pem
+  enrollmentTokenPath: /etc/agentdesktop/enrollment-token
+"#;
+        let daemon = parse_daemon(token).expect("enrollment token path");
+        assert_eq!(
+            daemon.controller.unwrap().enrollment_token_path,
+            Some(std::path::PathBuf::from(
+                "/etc/agentdesktop/enrollment-token"
+            ))
+        );
+
+        let error = parse_daemon(&format!("{token}  deviceAuthorization: true\n"))
+            .expect_err("enrollment token combined with device authorization");
+        assert!(error.to_string().contains("enrollmentTokenPath"), "{error}");
+    }
+
+    #[test]
+    fn controller_enrollment_tokens_need_an_audience_and_distinct_issuers() {
+        let controller = |enrollment_tokens: &str| {
+            parse_controller(&format!(
+                "tls: /etc/agentdesktop/tls\noidc:\n  issuer: https://idp.example.com\n  clientId: agentdesktop\nenrollmentTokens:\n{enrollment_tokens}"
+            ))
+        };
+        let tokens = controller(
+            "  audience: fleet\n  issuers:\n    - name: jamf\n      publicKeyPath: jamf.pub.pem\n      revokedIds: [batch-1]\n",
+        )
+        .expect("enrollment tokens")
+        .enrollment_tokens
+        .unwrap();
+        assert_eq!(tokens.audience, "fleet");
+        assert_eq!(tokens.issuers[0].revoked_ids, ["batch-1"]);
+
+        for (invalid, message) in [
+            (
+                "  audience: ''\n  issuers:\n    - name: jamf\n      publicKeyPath: a.pem\n",
+                "audience cannot be empty",
+            ),
+            (
+                "  audience: fleet\n  issuers: []\n",
+                "issuers cannot be empty",
+            ),
+            (
+                "  audience: fleet\n  issuers:\n    - name: jamf\n      publicKeyPath: a.pem\n    - name: jamf\n      publicKeyPath: b.pem\n",
+                "defined twice",
+            ),
+        ] {
+            let error = controller(invalid).expect_err("invalid enrollment tokens accepted");
+            assert!(error.to_string().contains(message), "{error}");
+        }
+    }
+
+    #[test]
     fn controller_tls_accepts_explicit_files_and_directory_shorthand() {
         let explicit = r#"
 tls:
@@ -3048,17 +3176,37 @@ oidc:
             configured.max_connections, 50_000,
             "unset fields keep defaults"
         );
+    }
 
-        let error = parse_controller(&format!(
-            "{base}fleetListener:\n  limits:\n    enrollmentRefill: 0s\n"
-        ))
-        .expect_err("zero refill");
-        assert!(
-            error
-                .to_string()
-                .contains("fleetListener.limits.enrollmentRefill"),
-            "{error}"
-        );
+    #[test]
+    fn controller_fleet_limits_reject_zero() {
+        let base = r#"
+tls: /etc/agentdesktop/tls
+oidc:
+  issuer: https://idp.example.com
+  clientId: agentdesktop
+"#;
+        for (field, zero) in [
+            ("maxConnections", "0"),
+            ("connectionsPerAddress", "0"),
+            ("maxMessageBytes", "0"),
+            ("enrollmentInFlight", "0"),
+            ("enrollmentBurst", "0"),
+            ("enrollmentRefill", "0s"),
+            ("deviceMessageBurst", "0"),
+            ("deviceMessageRefill", "0s"),
+        ] {
+            let error = parse_controller(&format!(
+                "{base}fleetListener:\n  limits:\n    {field}: {zero}\n"
+            ))
+            .expect_err(field);
+            assert!(
+                error
+                    .to_string()
+                    .contains(&format!("fleetListener.limits.{field} ")),
+                "{field}: {error}"
+            );
+        }
     }
 
     #[test]

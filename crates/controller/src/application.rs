@@ -2,6 +2,7 @@ use crate::{
     daemon_config::{self, DaemonConfigStore},
     database::Database,
     device_ca::DeviceCertificateIssuer,
+    enrollment_token::EnrollmentTokens,
     fleet_limits::FleetLimits,
     gateway_jwt::{self, GatewayJwtIssuer},
     http_listener::{HttpListener, HttpListenerLimits, HttpListenerTls},
@@ -26,11 +27,13 @@ pub async fn run(
     database: Database,
     extensions: management::Extensions,
 ) -> anyhow::Result<()> {
-    // Before any TLS configuration is built: the fleet listener's uses the
+    // Before any TLS configuration is built: the fleet listener uses the
     // process-wide rustls provider.
     crate::install_rustls_provider();
     // Fail before any network setup when the access mode has no provider.
     management::auth(&config.admin_listener.access, &extensions)?;
+    // Out-of-range fleet limits fail here too, before any network setup.
+    let limits = FleetLimits::from_config(&config.fleet_listener.limits)?;
     let tls = config.tls.files();
     let daemon_config = match &config.daemon_config {
         Some(daemon) => Some(daemon_config::load(&daemon.path, daemon.revision)?),
@@ -52,6 +55,15 @@ pub async fn run(
     .await
     .context("initialize OIDC enrollment")?;
     tracing::info!("OIDC enrollment enabled");
+    let enrollment_tokens = config
+        .enrollment_tokens
+        .as_ref()
+        .map(EnrollmentTokens::load)
+        .transpose()
+        .context("initialize enrollment tokens")?;
+    if enrollment_tokens.is_some() {
+        tracing::info!("token enrollment enabled");
+    }
     let gateway_jwt_issuer = config
         .gateway_jwt
         .as_ref()
@@ -106,7 +118,6 @@ pub async fn run(
     let device_certificate_issuer = DeviceCertificateIssuer::from_pem(ca_certificate, &ca_key)
         .context("initialize device certificate issuer")?;
     tracing::info!("device certificate issuance enabled");
-    let limits = FleetLimits::from_config(&config.fleet_listener.limits);
     let service = FleetAgentService::new(
         Some(oidc),
         database,
@@ -115,6 +126,7 @@ pub async fn run(
         Some(device_certificate_issuer),
         &limits,
     )
+    .with_enrollment_tokens(enrollment_tokens)
     .with_usage_collection(usage_ingest.is_some());
 
     let certificate = std::fs::read(&tls.certificate)

@@ -271,6 +271,11 @@
           "$ref": "#/$defs/ToolConfigPath",
           "default": {}
         },
+        "goose": {
+          "description": "Goose path.",
+          "$ref": "#/$defs/GooseStartupConfig",
+          "default": {}
+        },
         "grok": {
           "description": "Grok Build paths.",
           "$ref": "#/$defs/ToolConfigPath",
@@ -380,6 +385,47 @@
           "const": "request"
         }
       ]
+    },
+    "GooseConfig": {
+      "description": "Settings reconciled into Goose's user `config.yaml` and Agentdesktop's\ncustom provider definition.\n\n`managedConfig` keys use Goose's native uppercase setting names. Generated\ngateway settings take precedence when values overlap. Goose's native\ncommand-auth support refreshes credentials for authenticated gateways.\nGoose configuration is per-user, so management requires `--user`; system\ndaemons skip it.",
+      "type": "object",
+      "properties": {
+        "dynamicModels": {
+          "description": "Whether Goose should discover models dynamically from the gateway.\nDefaults to false, which exposes only the configured model.",
+          "type": "boolean"
+        },
+        "managedConfig": {
+          "description": "Arbitrary Goose native configuration values, keyed by setting name.",
+          "type": "object",
+          "additionalProperties": true
+        },
+        "model": {
+          "description": "Model ID selected when pointing Goose at the LLM gateway.\nRequired when a top-level `llmGateway` is configured.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "useLlmGateway": {
+          "description": "Whether this program uses the top-level LLM gateway.",
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "GooseStartupConfig": {
+      "description": "Local Goose configuration path.",
+      "type": "object",
+      "properties": {
+        "config": {
+          "description": "Goose's `config.yaml` to manage. Defaults to the standard Goose user\nconfiguration directory.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
     },
     "GrokConfig": {
       "description": "Settings reconciled into Grok Build's organization-managed configuration.\n\nValues under `managedConfig` are written to Grok's `managed_config.toml`.\nWhen generated LLM-gateway settings overlap with those values,\nagentdesktop's generated values take precedence.\nOnly system mode is supported. Grok can delete or replace the user-level\nmanaged file during startup, so user daemons skip it with an inactive reason.",
@@ -753,6 +799,17 @@
           "anyOf": [
             {
               "$ref": "#/$defs/CopilotConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "goose": {
+          "description": "Goose coding-agent CLI managed configuration.\n\nManaged in user mode (`--user`); system daemons skip it with an inactive reason.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GooseConfig"
             },
             {
               "type": "null"

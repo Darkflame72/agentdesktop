@@ -22,6 +22,11 @@ programs:
 #  pi:
 #    useLlmGateway: true
 #    model: claude-sonnet-4-5
+#  Goose is optional and requires --user.
+#  goose:
+#    useLlmGateway: true
+#    model: claude-sonnet-4-5
+#    dynamicModels: true
 #  Claude Desktop requires system mode; user daemons skip it.
 #  claudeDesktop:
 #    useLlmGateway: true

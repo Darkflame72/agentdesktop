@@ -88,6 +88,16 @@ Pi requires `--user`; authenticated gateway configuration cannot be applied
 with `--once` in user mode. Pi and Claude Desktop can share a policy: user
 daemons skip Claude Desktop, and system daemons skip Pi, with an inactive reason.
 
+## Goose
+
+Uncomment `programs.goose` in `config.yaml` to manage Goose and select a gateway
+model. Run the daemon with `--user`. Goose's custom provider uses native command
+authentication, so authenticated gateways refresh credentials without storing
+the token in Goose's configuration. For a controller JWT gateway, include
+`goose` in `llmGateway.authentication.allowedClientIds`. Set
+`dynamicModels: true` to let Goose discover the gateway's model catalog; the
+default is to expose only the model selected in the Agentdesktop config.
+
 
 ## Claude Desktop
 

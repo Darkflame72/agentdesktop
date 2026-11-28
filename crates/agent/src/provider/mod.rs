@@ -16,6 +16,7 @@ pub mod claude_desktop;
 pub mod codex;
 pub mod copilot;
 pub mod cursor;
+pub mod goose;
 pub mod grok;
 mod json_merge;
 mod metadata;

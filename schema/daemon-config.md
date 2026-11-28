@@ -18,6 +18,8 @@
 |`daemon.codex.config`|string|Configuration file.|
 |`daemon.copilot`|object|GitHub Copilot CLI paths (`config` = the `providers.json` to manage;<br>defaults to `COPILOT_PROVIDERS_CONFIG`, `$COPILOT_HOME/providers.json`,<br>then `~/.copilot/providers.json`).|
 |`daemon.copilot.config`|string|Configuration file.|
+|`daemon.goose`|object|Goose path.|
+|`daemon.goose.config`|string|Goose's `config.yaml` to manage. Defaults to the standard Goose user<br>configuration directory.|
 |`daemon.grok`|object|Grok Build paths.|
 |`daemon.grok.config`|string|Configuration file.|
 |`daemon.llmProxy`|object|Local loopback LLM proxy.|
@@ -77,6 +79,11 @@
 |`programs.copilot.models.*.modelId`|string|The CLI's `modelId` for the entry. Defaults to the entry's ID. The<br>name sent to the gateway is `wireModel` when that pass-through key is<br>set, else this one.|
 |`programs.copilot.models.*.provider`|enum|Which managed provider entry serves the model.<br>Possible values: `agentdesktop`, `agentdesktop-anthropic`.|
 |`programs.copilot.useLlmGateway`|boolean|Whether this program uses the top-level LLM gateway.|
+|`programs.goose`|object|Goose coding-agent CLI managed configuration.<br><br>Managed in user mode (`--user`); system daemons skip it with an inactive reason.|
+|`programs.goose.dynamicModels`|boolean|Whether Goose should discover models dynamically from the gateway.<br>Defaults to false, which exposes only the configured model.|
+|`programs.goose.managedConfig`|object|Arbitrary Goose native configuration values, keyed by setting name.|
+|`programs.goose.model`|string|Model ID selected when pointing Goose at the LLM gateway.<br>Required when a top-level `llmGateway` is configured.|
+|`programs.goose.useLlmGateway`|boolean|Whether this program uses the top-level LLM gateway.|
 |`programs.grok`|object|Grok Build managed configuration.|
 |`programs.grok.managedConfig`|object|Arbitrary values written to Grok's organization-managed TOML configuration.<br><br>Use Grok's native snake_case configuration keys. TOML has no null value,<br>so null values cannot be reconciled.|
 |`programs.grok.model`|string|Catalog ID and API model used when pointing Grok at the LLM gateway.<br><br>This is required when a top-level `llmGateway` is configured. If `models`<br>is empty, agentdesktop creates a catalog entry with this ID.|

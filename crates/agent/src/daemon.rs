@@ -93,6 +93,8 @@ struct ResolvedDaemonArgs {
     /// VS Code's user `settings.json`; `None` in system mode (user-only program).
     vscode_settings: Option<PathBuf>,
     pi: ResolvedPiStartupConfig,
+    /// Goose's user configuration; `None` in system mode.
+    goose: Option<(PathBuf, PathBuf)>,
     /// `daemon.reconcileInterval`; `None` means no periodic re-apply.
     reconcile_interval: Option<Duration>,
     once: bool,
@@ -154,10 +156,12 @@ impl DaemonArgs {
             .usage
             .clone()
             .filter(|_| !(self.once || self.dry_run));
-        // VS Code's chatLanguageModels.json and settings.json live in the
-        // user's own profile, like the Copilot CLI providers file: a system
-        // daemon has no user file to manage, so an explicit override is
-        // rejected up front.
+        // User-mode tool files have no system-level management equivalent, so
+        // explicit path overrides are rejected before resolving system-mode
+        // defaults.
+        if !user && startup.goose.config.is_some() {
+            bail!("daemon.goose.config requires --user (or daemon.user: true)");
+        }
         if !user
             && let Some(field) = [
                 ("config", startup.vscode.config.is_some()),
@@ -235,6 +239,7 @@ impl DaemonArgs {
                         settings: None,
                     }
                 },
+                goose: None,
                 reconcile_interval: startup.reconcile_interval,
                 once: self.once || self.dry_run,
                 dry_run: self.dry_run,
@@ -331,10 +336,47 @@ impl DaemonArgs {
                     crate::provider::pi::user_pi_agent_dir(&home).join("settings.json")
                 })),
             },
+            goose: Some((
+                startup
+                    .goose
+                    .config
+                    .unwrap_or_else(|| goose_config_dir(&home).join("config.yaml")),
+                goose_config_dir(&home).join("custom_providers/custom_agentdesktop.json"),
+            )),
             reconcile_interval: startup.reconcile_interval,
             once: self.once || self.dry_run,
             dry_run: self.dry_run,
         })
+    }
+}
+
+/// Goose uses etcetera's platform application directory rather than the
+/// daemon's generic config-home convention.
+fn goose_config_dir(home: &Path) -> PathBuf {
+    if let Some(root) = std::env::var_os("GOOSE_PATH_ROOT")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+    {
+        return root.join("config");
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        home.join("Library/Application Support/Block/goose")
+    }
+    #[cfg(windows)]
+    {
+        std::env::var_os("APPDATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home.join("AppData/Roaming"))
+            .join("Block/goose")
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
+    {
+        std::env::var_os("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home.join(".config"))
+            .join("goose")
     }
 }
 
@@ -458,6 +500,7 @@ where
         args.vscode_settings.clone(),
         args.pi.models.clone(),
         args.pi.settings.clone(),
+        args.goose.clone(),
         agentdesktop_client_executable()?,
         socket.clone(),
     )
@@ -2293,6 +2336,43 @@ programs:
                 .to_string()
                 .contains("daemon.copilot.config requires --user"),
             "{error:#}"
+        );
+    }
+
+    #[test]
+    fn system_mode_rejects_a_goose_config_path() {
+        let mut startup = config::DaemonStartupConfig::default();
+        startup.goose.config = Some(PathBuf::from("/tmp/goose.yaml"));
+        let error = resolve_error(daemon_args(false), startup);
+        assert!(
+            error
+                .to_string()
+                .contains("daemon.goose.config requires --user"),
+            "{error:#}"
+        );
+    }
+
+    #[test]
+    fn user_mode_uses_the_configured_goose_path() {
+        let mut startup = config::DaemonStartupConfig::default();
+        startup.goose.config = Some(PathBuf::from("/tmp/goose/config.yaml"));
+        let resolved = daemon_args(true)
+            .resolve(
+                startup,
+                PathBuf::from("config.yaml"),
+                PathBuf::from("agentdesktop.sock"),
+            )
+            .unwrap();
+        assert_eq!(
+            resolved.goose.as_ref().map(|(config, _)| config),
+            Some(&PathBuf::from("/tmp/goose/config.yaml"))
+        );
+        assert_eq!(
+            resolved.goose.as_ref().map(|(_, provider)| provider),
+            Some(
+                &super::goose_config_dir(&super::home_directory().unwrap())
+                    .join("custom_providers/custom_agentdesktop.json")
+            )
         );
     }
 

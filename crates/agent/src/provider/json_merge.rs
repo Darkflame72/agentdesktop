@@ -17,14 +17,15 @@ struct MergeState {
     after: Value,
 }
 
-/// How an existing user file is parsed. The merged file is always written as
-/// standard JSON.
+/// How an existing user file is parsed and written.
 #[derive(Clone, Copy)]
 pub(super) enum JsonFormat {
     Json,
     /// JSON with comments and trailing commas; they are not kept when the
     /// file is rewritten.
     Jsonc,
+    /// YAML using the daemon's JSON-compatible YAML data model.
+    Yaml,
 }
 
 impl JsonFormat {
@@ -35,6 +36,18 @@ impl JsonFormat {
                 let contents = std::str::from_utf8(contents)?;
                 // Normalize commented input to ordinary JSON when writing it.
                 Ok(json5::from_str(contents.trim_start_matches('\u{feff}'))?)
+            }
+            Self::Yaml => {
+                agentdesktop_core::serdes::yamlviajson::from_str(std::str::from_utf8(contents)?)
+            }
+        }
+    }
+
+    fn serialize(&self, value: &Value) -> anyhow::Result<Vec<u8>> {
+        match self {
+            Self::Json | Self::Jsonc => Ok(serde_json::to_vec_pretty(value)?),
+            Self::Yaml => {
+                Ok(agentdesktop_core::serdes::yamlviajson::to_string(value)?.into_bytes())
             }
         }
     }
@@ -206,7 +219,9 @@ pub(super) fn plan_merge_with(
     }
     merge_overlay(&mut combined, managed);
 
-    let mut contents = serde_json::to_vec_pretty(&combined)
+    let mut contents = options
+        .format
+        .serialize(&combined)
         .with_context(|| format!("serialize merged {display_name}"))?;
     contents.push(b'\n');
     // An unchanged file that grants more than `options.mode` is rewritten
@@ -338,7 +353,9 @@ pub(super) fn plan_remove_with(
     let proposed = if state.created && empty {
         None
     } else {
-        let mut contents = serde_json::to_vec_pretty(&settings)
+        let mut contents = options
+            .format
+            .serialize(&settings)
             .with_context(|| format!("serialize {display_name} after removing managed values"))?;
         contents.push(b'\n');
         Some(contents)

@@ -43,6 +43,16 @@ cleanup. Other providers and user additions are preserved. On Unix,
 reconciliation repairs a looser mode on the managed file; cleanup keeps the
 file's current mode. Dry runs report the `models.json` action and path
 without its contents, which may include the user's own API keys.
+
+Goose stores configuration in the user's Goose config directory. Management
+requires `--user`; system daemons skip `programs.goose`. Agentdesktop merges
+native settings into `config.yaml` and manages its OpenAI-compatible custom
+provider under `custom_providers`. When gateway authentication is enabled,
+Goose's command-auth hook invokes the Agentdesktop credential helper and
+refreshes credentials on demand. Both files are written owner-only and
+redacted from dry-run diffs. `programs.goose.dynamicModels` controls whether
+Goose discovers models dynamically; it defaults to `false`, exposing only the
+configured model.
 Commented `models.json` files are accepted and rewritten as standard JSON,
 preserving user configuration values. `settings.json` requires standard JSON.
 Discovery recognizes npm's Windows command shims as well as symlinked launchers,
@@ -69,18 +79,18 @@ files are not scanned until the adapter imports them into a Pi-owned file.
 
 ✅ Implemented · ◯ Not implemented · — Not applicable
 
-| Feature | [Claude Code](claude_code/) | [Claude Desktop](claude_desktop/) | [Codex](codex/) | [OpenCode](opencode/) | [VS Code](vscode/) | [Ollama](ollama/) | [Cursor](cursor/) | [Grok Build](grok/) | [GitHub Copilot CLI](copilot/) | [Pi](pi/) |
-| --- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| Installation and version discovery | ✅ | ✅ | ✅ | ✅ | ✅ | — | ✅ | ✅ | ✅ | ✅ |
-| Local model discovery | — | — | — | — | — | ✅ | — | — | — | — |
-| MCP server discovery | ✅ | ✅ | ✅ | ◯ | ✅ | — | ✅ | ✅ | — | ✅ |
-| Skill discovery | ✅ | ◯ | ✅ | ◯ | ✅ | — | ✅ | ✅ | — | ✅ |
-| Managed configuration | ✅ | ✅ | ✅ | ✅ | ✅ | ◯ | ◯ | ✅ | ✅ | ✅ |
-| LLM gateway routing | ✅ | ✅ | ✅ | ✅ | ✅ | — | ◯ | ✅ | ✅ | ✅ |
-| Gateway credentials | ✅ | ✅ | ✅ | ✅ | ✅ | — | ◯ | ✅ | ✅ | ✅ |
-| Sandbox configuration | ✅ | ◯ | ✅ | ◯ | ◯ | — | ◯ | ◯ | ◯ | ◯ |
-| Tool-use telemetry | ✅ | ◯ | ◯ | ◯ | ◯ | — | ◯ | ◯ | ◯ | ◯ |
-| Session-start telemetry | ✅ | ◯ | ◯ | ◯ | ◯ | — | ◯ | ◯ | ◯ | ◯ |
+| Feature | [Claude Code](claude_code/) | [Claude Desktop](claude_desktop/) | [Codex](codex/) | [OpenCode](opencode/) | [VS Code](vscode/) | [Ollama](ollama/) | [Cursor](cursor/) | [Grok Build](grok/) | [GitHub Copilot CLI](copilot/) | [Pi](pi/) | [Goose](goose/) |
+| --- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| Installation and version discovery | ✅ | ✅ | ✅ | ✅ | ✅ | — | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Local model discovery | — | — | — | — | — | ✅ | — | — | — | — | — |
+| MCP server discovery | ✅ | ✅ | ✅ | ◯ | ✅ | — | ✅ | ✅ | — | ✅ | — |
+| Skill discovery | ✅ | ◯ | ✅ | ◯ | ✅ | — | ✅ | ✅ | — | ✅ | — |
+| Managed configuration | ✅ | ✅ | ✅ | ✅ | ✅ | ◯ | ◯ | ✅ | ✅ | ✅ | ✅ |
+| LLM gateway routing | ✅ | ✅ | ✅ | ✅ | ✅ | — | ◯ | ✅ | ✅ | ✅ | ✅ |
+| Gateway credentials | ✅ | ✅ | ✅ | ✅ | ✅ | — | ◯ | ✅ | ✅ | ✅ | ✅ |
+| Sandbox configuration | ✅ | ◯ | ✅ | ◯ | ◯ | — | ◯ | ◯ | ◯ | ◯ | — |
+| Tool-use telemetry | ✅ | ◯ | ◯ | ◯ | ◯ | — | ◯ | ◯ | ◯ | ◯ | — |
+| Session-start telemetry | ✅ | ◯ | ◯ | ◯ | ◯ | — | ◯ | ◯ | ◯ | ◯ | — |
 
 - ◯ describes a gap in agentdesktop; it does not mean the upstream provider
   cannot support the feature.

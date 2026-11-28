@@ -101,6 +101,9 @@ pub struct DaemonStartupConfig {
     /// Pi paths.
     #[serde(default)]
     pub pi: PiStartupConfig,
+    /// Goose path.
+    #[serde(default)]
+    pub goose: GooseStartupConfig,
     /// Local loopback LLM proxy.
     #[serde(default)]
     pub llm_proxy: LlmProxyStartupConfig,
@@ -215,6 +218,17 @@ pub struct PiStartupConfig {
     /// Settings file.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub settings: Option<PathBuf>,
+}
+
+/// Local Goose configuration path.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GooseStartupConfig {
+    /// Goose's `config.yaml` to manage. Defaults to the standard Goose user
+    /// configuration directory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config: Option<PathBuf>,
 }
 
 impl Default for DaemonConfig {
@@ -1066,6 +1080,11 @@ pub struct ProgramsConfig {
     /// Managed in user mode (`--user`); system daemons skip it with an inactive reason.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pi: Option<PiConfig>,
+    /// Goose coding-agent CLI managed configuration.
+    ///
+    /// Managed in user mode (`--user`); system daemons skip it with an inactive reason.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goose: Option<GooseConfig>,
 }
 
 impl ProgramsConfig {
@@ -1097,6 +1116,7 @@ impl ProgramsConfig {
             && self.copilot.is_none()
             && self.vscode.is_none()
             && self.pi.is_none()
+            && self.goose.is_none()
     }
 }
 
@@ -1600,6 +1620,34 @@ pub struct PiConfig {
     pub managed_config: BTreeMap<String, serde_json::Value>,
 }
 
+/// Settings reconciled into Goose's user `config.yaml` and Agentdesktop's
+/// custom provider definition.
+///
+/// `managedConfig` keys use Goose's native uppercase setting names. Generated
+/// gateway settings take precedence when values overlap. Goose's native
+/// command-auth support refreshes credentials for authenticated gateways.
+/// Goose configuration is per-user, so management requires `--user`; system
+/// daemons skip it.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GooseConfig {
+    /// Whether this program uses the top-level LLM gateway.
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    pub use_llm_gateway: bool,
+    /// Model ID selected when pointing Goose at the LLM gateway.
+    /// Required when a top-level `llmGateway` is configured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// Whether Goose should discover models dynamically from the gateway.
+    /// Defaults to false, which exposes only the configured model.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub dynamic_models: bool,
+    /// Arbitrary Goose native configuration values, keyed by setting name.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub managed_config: BTreeMap<String, serde_json::Value>,
+}
+
 /// Upstream authentication selected by a managed agent.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -1930,6 +1978,9 @@ fn validate_daemon(
         if programs.pi.is_some() {
             anyhow::bail!("sandbox is not supported for Pi");
         }
+        if programs.goose.is_some() {
+            anyhow::bail!("sandbox is not supported for Goose");
+        }
     }
     if let Some(gateway) = llm_gateway {
         if !matches!(gateway.url.scheme(), "http" | "https") {
@@ -2134,6 +2185,16 @@ fn validate_daemon(
             anyhow::bail!("Grok Build model {model} is not declared in models");
         }
     }
+    if let Some(goose) = &programs.goose
+        && llm_gateway.is_some()
+        && goose.use_llm_gateway
+        && goose
+            .model
+            .as_deref()
+            .is_none_or(|model| model.trim().is_empty())
+    {
+        anyhow::bail!("Goose requires model when llmGateway is configured");
+    }
     if let Some(copilot) = &programs.copilot {
         copilot.validate()?;
         if llm_gateway.is_some() && copilot.use_llm_gateway && copilot.models.is_empty() {
@@ -2202,6 +2263,10 @@ fn default_true() -> bool {
 
 fn is_true(value: &bool) -> bool {
     *value
+}
+
+fn is_false(value: &bool) -> bool {
+    !value
 }
 
 #[cfg(test)]
@@ -2433,6 +2498,51 @@ mod tests {
                 .contains("only allowed in the local")
         );
         assert!(super::parse_local_daemon("daemon: { pi: { model: wrong } }").is_err());
+    }
+
+    #[test]
+    fn goose_startup_path_is_local_only() {
+        let yaml = "daemon:\n  goose:\n    config: custom/goose.yaml\n";
+        let config = super::parse_local_daemon(yaml).expect("local Goose path is supported");
+        assert_eq!(
+            config.daemon.unwrap().goose.config.unwrap(),
+            std::path::Path::new("custom/goose.yaml")
+        );
+        assert!(
+            parse_daemon(yaml)
+                .unwrap_err()
+                .to_string()
+                .contains("only allowed in the local")
+        );
+        assert!(super::parse_local_daemon("daemon: { goose: { model: wrong } }").is_err());
+    }
+
+    #[test]
+    fn goose_gateway_requires_a_model_and_manages_native_settings() {
+        let missing_model =
+            "llmGateway:\n  url: https://gateway.example.com\nprograms:\n  goose: {}\n";
+        assert!(
+            parse_daemon(missing_model)
+                .unwrap_err()
+                .to_string()
+                .contains("Goose requires model")
+        );
+
+        let daemon = parse_daemon(
+            "llmGateway:\n  url: https://gateway.example.com\nprograms:\n  goose:\n    model: gpt-4.1\n    managedConfig:\n      GOOSE_MODE: auto\n",
+        )
+        .expect("valid Goose gateway configuration");
+        let serialized = serde_json::to_value(daemon).unwrap();
+        assert_eq!(serialized["programs"]["goose"]["model"], "gpt-4.1");
+        assert_eq!(
+            serialized["programs"]["goose"]["managedConfig"]["GOOSE_MODE"],
+            "auto"
+        );
+
+        let gateway_disabled = parse_daemon(
+            "llmGateway:\n  url: https://gateway.example.com\nprograms:\n  goose:\n    useLlmGateway: false\n",
+        );
+        assert!(gateway_disabled.is_ok());
     }
 
     #[test]

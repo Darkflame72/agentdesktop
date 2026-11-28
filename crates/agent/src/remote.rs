@@ -1771,6 +1771,7 @@ mod tests {
             None,
             Some(root.join("pi/models.json")),
             Some(root.join("pi/settings.json")),
+            None,
             root.join("bin/agentdesktop"),
             root.join("agentdesktop.sock"),
         )
